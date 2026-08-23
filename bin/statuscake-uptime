@@ -1,0 +1,159 @@
+#!/bin/bash
+#
+# Fetch every StatusCake uptime check and emit them as one merged JSON document.
+#
+# stdout is always a single JSON object, in one of two shapes:
+#   {"error": null,      "code": null,   "data": [ {id, name, website_url, status, paused, uptime, tags, ...}, ... ]}
+#   {"error": "message", "code": "slug", "data": []}
+#
+# `error` is prose for a human; `code` is the same failure as a stable slug, so
+# the QML side can branch (offer the token prompt on "no_token") without
+# pattern-matching English. Codes: missing_dep, usage, no_token, unauthorized,
+# rate_limited, network, http, parse.
+#
+# Exit status is 0 on success and 1 on failure, but the JSON is printed either
+# way so the QML side parses one shape and never has to inspect exit codes.
+#
+# The API token is piped into curl's -H via stdin (@-) rather than passed as an
+# argument, so it never appears in `ps` or /proc/<pid>/cmdline. Everything else
+# on the command line is public.
+
+set -uo pipefail
+
+API="https://api.statuscake.com/v1/uptime"
+TOKEN_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/statuscake-token"
+
+# The API caps `limit` at 100. MAX_PAGES is a runaway guard: 50 pages is 5000
+# checks, well past any real account, and stops a malformed page_count from
+# looping forever inside the shell process.
+PAGE_LIMIT=100
+MAX_PAGES=50
+
+TAGS=""
+MATCH_ANY=0
+
+usage() {
+  cat <<'USAGE'
+Usage: statuscake-uptime [--tags LIST] [--match-any]
+
+  --tags LIST    Comma-separated tags; only checks carrying them are returned.
+  --match-any    Match checks carrying ANY of --tags instead of all of them.
+
+Reads the API token from, in order:
+  $STATUSCAKE_API_TOKEN
+  secret-tool lookup service statuscake account api
+  ~/.config/omarchy/statuscake-token
+USAGE
+}
+
+# Hand-rolled so a missing jq still produces the documented output shape rather
+# than a bare shell error the caller cannot parse.
+emit_bootstrap_error() {
+  printf '{"error":"%s","code":"%s","data":[]}\n' "$1" "$2"
+  exit 1
+}
+
+emit_error() {
+  jq -n --arg error "$1" --arg code "${2:-http}" '{error: $error, code: $code, data: []}'
+  exit 1
+}
+
+trim() {
+  local s="$1"
+  s="${s#"${s%%[![:space:]]*}"}"
+  s="${s%"${s##*[![:space:]]}"}"
+  printf '%s' "$s"
+}
+
+# "prod, web ,, staging" -> "prod,web,staging". The API matches tags literally,
+# so a stray space after a comma is a tag that matches nothing; users typing a
+# natural comma-separated list should not silently get zero results.
+normalize_tags() {
+  printf '%s' "$1" | sed -e 's/[[:space:]]*,[[:space:]]*/,/g' \
+    -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' \
+    -e 's/,\{2,\}/,/g' -e 's/^,//' -e 's/,$//'
+}
+
+command -v curl >/dev/null 2>&1 || emit_bootstrap_error "curl is not installed" missing_dep
+command -v jq >/dev/null 2>&1 || emit_bootstrap_error "jq is not installed" missing_dep
+
+while (( $# > 0 )); do
+  case "$1" in
+  --tags)
+    [[ $# -ge 2 ]] || emit_error "--tags needs a value" usage
+    TAGS=$(normalize_tags "$2")
+    shift 2
+    ;;
+  --match-any)
+    MATCH_ANY=1
+    shift
+    ;;
+  -h | --help)
+    usage
+    exit 0
+    ;;
+  *)
+    emit_error "unknown option: $1" usage
+    ;;
+  esac
+done
+
+token=$(trim "${STATUSCAKE_API_TOKEN:-}")
+
+if [[ -z $token ]] && command -v secret-tool >/dev/null 2>&1; then
+  token=$(trim "$(secret-tool lookup service statuscake account api 2>/dev/null)")
+fi
+
+if [[ -z $token && -r $TOKEN_FILE ]]; then
+  token=$(trim "$(<"$TOKEN_FILE")")
+fi
+
+if [[ -z $token ]]; then
+  emit_error "no StatusCake API token found" no_token
+fi
+
+fetch_page() {
+  local page="$1"
+  local args=(
+    --get --silent --show-error --max-time 15
+    --data-urlencode "limit=$PAGE_LIMIT"
+    --data-urlencode "page=$page"
+  )
+  [[ -n $TAGS ]] && args+=(--data-urlencode "tags=$TAGS")
+  (( MATCH_ANY )) && args+=(--data-urlencode "matchany=true")
+  args+=(-H @- -w $'\n%{http_code}' "$API")
+
+  printf 'Authorization: Bearer %s' "$token" | curl "${args[@]}"
+}
+
+all="[]"
+page=1
+
+while (( page <= MAX_PAGES )); do
+  resp=$(fetch_page "$page") || emit_error "could not reach the StatusCake API" network
+
+  # -w appended the status code on its own trailing line.
+  code="${resp##*$'\n'}"
+  body="${resp%$'\n'*}"
+
+  case "$code" in
+  200) ;;
+  401 | 403) emit_error "StatusCake rejected the API token (HTTP $code)" unauthorized ;;
+  429) emit_error "rate limited by StatusCake (HTTP 429); increase the refresh interval" rate_limited ;;
+  "") emit_error "no response from the StatusCake API" network ;;
+  *) emit_error "StatusCake returned HTTP $code" http ;;
+  esac
+
+  jq -e . >/dev/null 2>&1 <<<"$body" || emit_error "unparseable response from StatusCake" parse
+
+  all=$(jq -c --argjson acc "$all" '$acc + (.data // [])' <<<"$body") ||
+    emit_error "could not merge page $page" parse
+
+  page_count=$(jq -r '.metadata.page_count // 1' <<<"$body")
+  [[ $page_count =~ ^[0-9]+$ ]] || page_count=1
+  (( page >= page_count )) && break
+
+  page=$(( page + 1 ))
+done
+
+jq -n --argjson data "$all" '{error: null, code: null, data: $data}'

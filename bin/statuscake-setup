@@ -1,0 +1,328 @@
+#!/bin/bash
+#
+# Store a StatusCake API token: prompt for it, verify it against the live API,
+# and put it where bin/statuscake-uptime looks for it.
+#
+# Two front ends use this. A terminal gets the interactive prompt; the bar
+# panel runs it with --stdin --json, piping the typed token in and parsing one
+# JSON object back. Both paths share the same verify-then-store rule.
+#
+# The token is never passed as a command-line argument, never echoed to the
+# terminal, and never written to shell.json. It goes into the session keyring
+# via secret-tool, or -- if no keyring is available -- into a 0600 file.
+
+set -uo pipefail
+
+API="https://api.statuscake.com/v1/uptime"
+TOKEN_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/statuscake-token"
+KEYRING_ATTRS=(service statuscake account api)
+KEYRING_LABEL="StatusCake API"
+
+USE_FILE=0
+FROM_STDIN=0
+JSON=0
+NO_VERIFY=0
+ACTION="store"
+
+# Set by verify_token on failure, so the caller can report the same failure as
+# prose to a terminal and as a slug to the panel.
+VERIFY_ERROR=""
+VERIFY_CODE=""
+
+say() { (( JSON )) || printf '%s\n' "$*"; }
+warn() { (( JSON )) || printf '%s\n' "$*" >&2; }
+fail() {
+  warn "statuscake-setup: $*"
+  exit 1
+}
+
+usage() {
+  cat <<'USAGE'
+Usage: statuscake-setup [--file] [--stdin] [--json]
+       statuscake-setup --status [--no-verify] [--json]
+       statuscake-setup --remove [--json]
+
+  (no options)  Prompt for an API token, verify it, and store it.
+  --stdin       Read the token from stdin instead of prompting. For callers
+                that are not a terminal, such as the bar panel.
+  --file        Store in ~/.config/omarchy/statuscake-token (0600) instead of
+                the keyring. Use this on systems without a running keyring.
+  --status      Report where a token was found and whether it still works.
+  --no-verify   With --status, report where the token lives without calling
+                the API. Costs nothing and touches no network.
+  --remove      Delete the stored token from the keyring and the file.
+  --json        Emit one JSON object instead of prose. Every run prints exactly
+                one object, success or failure, so a caller parses one shape:
+                  store   {"ok":true,  "error":null, "code":null, "stored":"keyring", "path":null}
+                  status  {"ok":true,  "error":null, "code":null, "source":"keyring", "path":null, "valid":true}
+                  failure {"ok":false, "error":"...", "code":"rejected", ...}
+
+Create a token at https://app.statuscake.com/User/Account -- it needs read
+access to uptime tests. Nothing is written until the token verifies.
+USAGE
+}
+
+# --json is honored even when it follows the option that failed, so a bad
+# invocation from the panel still answers in the shape the panel parses.
+for arg in "$@"; do
+  [[ $arg == --json ]] && JSON=1
+done
+
+# --json emitters. Every exit path in JSON mode goes through one of these, so
+# the caller always gets exactly one object. They are no-ops in prose mode,
+# which lets the failure paths call both without branching.
+emit_json_failure() {
+  (( JSON )) || return 0
+  command -v jq >/dev/null 2>&1 || return 0
+  jq -n --arg error "$1" --arg code "$2" \
+    '{ok: false, error: $error, code: $code, stored: null, source: "", path: null, valid: null}'
+  exit 1
+}
+
+emit_json_store_ok() {
+  (( JSON )) || return 0
+  jq -n --arg stored "$1" --arg path "${2:-}" \
+    '{ok: true, error: null, code: null, stored: $stored, path: (if $path == "" then null else $path end)}'
+  exit 0
+}
+
+# Unlike the others this one does not exit: --status reports a token it found
+# but could not verify as ok:true with valid:false, and still exits 1.
+emit_json_status_ok() {
+  (( JSON )) || return 0
+  jq -n --arg source "$1" --arg path "${2:-}" --arg valid "${3:-}" \
+    '{ok: true, error: null, code: null, source: $source,
+      path: (if $path == "" then null else $path end),
+      valid: (if $valid == "" then null else $valid == "true" end)}'
+}
+
+have_keyring() {
+  command -v secret-tool >/dev/null 2>&1
+}
+
+trim() {
+  local s="$1"
+  s="${s#"${s%%[![:space:]]*}"}"
+  s="${s%"${s##*[![:space:]]}"}"
+  printf '%s' "$s"
+}
+
+while (( $# > 0 )); do
+  case "$1" in
+  --file) USE_FILE=1; shift ;;
+  --stdin) FROM_STDIN=1; shift ;;
+  --json) JSON=1; shift ;;
+  --no-verify) NO_VERIFY=1; shift ;;
+  --status) ACTION="status"; shift ;;
+  --remove) ACTION="remove"; shift ;;
+  -h | --help) usage; exit 0 ;;
+  *)
+    (( JSON )) || usage >&2
+    emit_json_failure "unknown option: $1" usage
+    fail "unknown option: $1"
+    ;;
+  esac
+done
+
+command -v curl >/dev/null 2>&1 || {
+  emit_json_failure "curl is not installed" missing_dep
+  fail "curl is not installed"
+}
+
+if (( JSON )); then
+  command -v jq >/dev/null 2>&1 || {
+    # No jq means no safe way to quote the message, so say so in the one shape
+    # a caller can still parse. This string is a constant, not interpolated.
+    printf '{"ok":false,"error":"jq is not installed","code":"missing_dep"}\n'
+    exit 1
+  }
+fi
+
+# Returns the HTTP status code for a token. The token reaches curl on stdin so
+# it stays out of ps and /proc/<pid>/cmdline, exactly as the fetch helper does.
+token_http_code() {
+  printf 'Authorization: Bearer %s' "$1" |
+    curl --get --silent --show-error --max-time 15 \
+      --data-urlencode "limit=1" \
+      -H @- -o /dev/null -w '%{http_code}' "$API" 2>/dev/null
+}
+
+# 0 if the token works. On failure sets VERIFY_ERROR (prose) and VERIFY_CODE
+# (slug) and, in prose mode, prints the explanation to stderr.
+verify_token() {
+  local token="$1" code
+  VERIFY_ERROR=""
+  VERIFY_CODE=""
+  code=$(token_http_code "$token")
+  case "$code" in
+  200)
+    return 0
+    ;;
+  401 | 403)
+    VERIFY_ERROR="StatusCake rejected that token (HTTP $code). Check that you pasted it whole and that it has read access to uptime tests."
+    VERIFY_CODE="rejected"
+    ;;
+  000 | "")
+    VERIFY_ERROR="Could not reach the StatusCake API. Check your network and try again."
+    VERIFY_CODE="network"
+    ;;
+  429)
+    VERIFY_ERROR="StatusCake is rate limiting this account right now (HTTP 429). Try again shortly."
+    VERIFY_CODE="rate_limited"
+    ;;
+  *)
+    VERIFY_ERROR="Unexpected response from StatusCake (HTTP $code)."
+    VERIFY_CODE="http"
+    ;;
+  esac
+  warn "$VERIFY_ERROR"
+  return 1
+}
+
+# Where a token would be read from, in the same order bin/statuscake-uptime
+# reads it. Sets FOUND_TOKEN, FOUND_SOURCE (env|keyring|file, empty if none)
+# and FOUND_PATH.
+FOUND_TOKEN=""
+FOUND_SOURCE=""
+FOUND_PATH=""
+
+locate_token() {
+  FOUND_TOKEN=""
+  FOUND_SOURCE=""
+  FOUND_PATH=""
+
+  if [[ -n ${STATUSCAKE_API_TOKEN:-} ]]; then
+    FOUND_TOKEN=$(trim "$STATUSCAKE_API_TOKEN")
+    FOUND_SOURCE="env"
+  elif have_keyring && FOUND_TOKEN=$(secret-tool lookup "${KEYRING_ATTRS[@]}" 2>/dev/null) && [[ -n $FOUND_TOKEN ]]; then
+    FOUND_TOKEN=$(trim "$FOUND_TOKEN")
+    FOUND_SOURCE="keyring"
+  elif [[ -r $TOKEN_FILE ]]; then
+    FOUND_TOKEN=$(trim "$(<"$TOKEN_FILE")")
+    FOUND_SOURCE="file"
+    FOUND_PATH="$TOKEN_FILE"
+  fi
+
+  [[ -n $FOUND_TOKEN ]] || { FOUND_SOURCE=""; FOUND_PATH=""; return 1; }
+  return 0
+}
+
+# --status ------------------------------------------------------------------
+
+if [[ $ACTION == status ]]; then
+  if ! locate_token; then
+    emit_json_failure "No token stored yet." no_token
+    say "No token found. Run this script with no options to set one."
+    exit 1
+  fi
+
+  case "$FOUND_SOURCE" in
+  env) say "Token found in: \$STATUSCAKE_API_TOKEN" ;;
+  keyring) say "Token found in: keyring" ;;
+  file) say "Token found in: $FOUND_PATH" ;;
+  esac
+
+  if (( NO_VERIFY )); then
+    emit_json_status_ok "$FOUND_SOURCE" "$FOUND_PATH" ""
+    exit 0
+  fi
+
+  if verify_token "$FOUND_TOKEN"; then
+    emit_json_status_ok "$FOUND_SOURCE" "$FOUND_PATH" "true"
+    say "It works."
+    exit 0
+  fi
+  emit_json_status_ok "$FOUND_SOURCE" "$FOUND_PATH" "false"
+  exit 1
+fi
+
+# --remove ------------------------------------------------------------------
+
+if [[ $ACTION == remove ]]; then
+  removed=0
+  if have_keyring && secret-tool clear "${KEYRING_ATTRS[@]}" 2>/dev/null; then
+    say "Cleared the keyring entry."
+    removed=1
+  fi
+  if [[ -e $TOKEN_FILE ]]; then
+    rm -f -- "$TOKEN_FILE" && say "Deleted $TOKEN_FILE" && removed=1
+  fi
+  (( removed )) || say "Nothing stored to remove."
+  emit_json_store_ok "removed"
+  exit 0
+fi
+
+# store ---------------------------------------------------------------------
+
+token=""
+
+if (( FROM_STDIN )); then
+  # One line, however it arrives: `read` returns non-zero on a final line with
+  # no newline but still fills the variable, which is the common case when a
+  # caller writes the token and closes the pipe.
+  IFS= read -r token || true
+else
+  [[ -t 0 ]] || fail "this script is interactive; run it from a terminal, or pass --stdin"
+
+  say "StatusCake API token setup"
+  say "Create one at https://app.statuscake.com/User/Account (needs read access to uptime tests)."
+  say ""
+
+  if command -v gum >/dev/null 2>&1; then
+    token=$(gum input --password --prompt "API token: ") || fail "cancelled"
+  else
+    printf 'API token: ' >&2
+    read -rs token
+    printf '\n' >&2
+  fi
+fi
+
+token=$(trim "$token")
+if [[ -z $token ]]; then
+  emit_json_failure "No token entered." empty
+  fail "no token entered"
+fi
+
+say "Verifying..."
+if ! verify_token "$token"; then
+  emit_json_failure "$VERIFY_ERROR" "$VERIFY_CODE"
+  exit 1
+fi
+say "Token verified."
+
+# Nothing is written until the token has proven itself above, so a typo never
+# replaces a working token with a broken one.
+if (( ! USE_FILE )) && have_keyring; then
+  if printf '%s' "$token" |
+    secret-tool store --label="$KEYRING_LABEL" "${KEYRING_ATTRS[@]}" 2>/dev/null; then
+    emit_json_store_ok "keyring"
+    say "Stored in the keyring."
+    say ""
+    say "Add the widget to your bar with:"
+    say "  omarchy plugin enable robinvanderknaap.statuscake"
+    exit 0
+  fi
+  warn "Could not write to the keyring (is one running and unlocked?)."
+  warn "Falling back to a file."
+fi
+
+if ! mkdir -p -- "$(dirname -- "$TOKEN_FILE")"; then
+  emit_json_failure "Could not create $(dirname -- "$TOKEN_FILE")." store_failed
+  fail "could not create $(dirname -- "$TOKEN_FILE")"
+fi
+
+if ! (
+  umask 077
+  printf '%s\n' "$token" > "$TOKEN_FILE"
+); then
+  emit_json_failure "Could not write $TOKEN_FILE." store_failed
+  fail "could not write $TOKEN_FILE"
+fi
+chmod 600 -- "$TOKEN_FILE" 2>/dev/null
+
+emit_json_store_ok "file" "$TOKEN_FILE"
+
+say "Stored in $TOKEN_FILE (readable only by you)."
+say ""
+say "Add the widget to your bar with:"
+say "  omarchy plugin enable robinvanderknaap.statuscake"

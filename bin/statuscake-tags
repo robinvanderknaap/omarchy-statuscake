@@ -1,0 +1,34 @@
+#!/bin/bash
+#
+# Print every distinct tag on the account as a JSON array of strings:
+#
+#   ["prod","staging","web"]
+#
+# This is what the tag picker in the settings view lists. It deliberately runs
+# statuscake-uptime with **no filter**: once a tag filter is set the API only
+# returns the checks that match it, so a filtered fetch can only ever report
+# back the tags already selected -- and a tag you deselected would vanish from
+# the list you need it in.
+#
+# A JSON array rather than one tag per line because qs.Ui's MultiSelect only
+# treats output as JSON when it starts with `[`, and a tag is free text: one
+# that happens to start with a bracket would otherwise be parsed as a broken
+# document. Failure prints nothing on stdout, the reason on stderr, and exits
+# non-zero, which is the whole of the contract MultiSelect's optionsCommand
+# has -- it reports "Options command exited N" and keeps the last good list.
+
+set -uo pipefail
+
+here=$(dirname "$(readlink -f "$0")")
+
+payload=$("$here/statuscake-uptime")
+
+# statuscake-uptime always prints one JSON object, on failure as well, so the
+# reason for a non-zero exit is in there rather than on its stderr.
+if (( $? != 0 )); then
+  jq -r '.error // "statuscake-uptime failed"' <<<"$payload" >&2
+  exit 1
+fi
+
+jq -ce '[.data[].tags[]? | select(. != null and . != "")] | unique' <<<"$payload" ||
+  { echo "could not read tags from statuscake-uptime" >&2; exit 1; }

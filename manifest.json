@@ -1,0 +1,64 @@
+{
+  "schemaVersion": 1,
+  "id": "robinvanderknaap.statuscake",
+  "name": "StatusCake",
+  "version": "0.1.0",
+  "author": "Robin van der Knaap",
+  "description": "StatusCake uptime check counts in the bar, with a popup listing every check",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "StatusCake",
+    "description": "Up/down counts for your StatusCake uptime checks, with a popup listing each check and its uptime.",
+    "category": "Status",
+    "aliases": [
+      "statuscake",
+      "uptime"
+    ],
+    "allowMultiple": false,
+    "defaultSection": "right",
+    "defaults": {
+      "refreshIntervalSec": 300,
+      "tags": "",
+      "matchAnyTag": true,
+      "notify": true
+    },
+    "schema": [
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Refresh interval (seconds)",
+        "min": 60,
+        "max": 3600,
+        "step": 30,
+        "defaultValue": 300,
+        "description": "How often to poll the StatusCake API. Lower values burn through your API rate limit faster."
+      },
+      {
+        "key": "tags",
+        "type": "string",
+        "label": "Tags",
+        "defaultValue": "",
+        "description": "Optional comma-separated tag list. Leave empty to count every uptime check on the account."
+      },
+      {
+        "key": "matchAnyTag",
+        "type": "boolean",
+        "label": "Match any tag",
+        "defaultValue": true,
+        "description": "When on, include checks carrying any of the tags above instead of only those carrying all of them."
+      },
+      {
+        "key": "notify",
+        "type": "boolean",
+        "label": "Notify on state changes",
+        "defaultValue": true,
+        "description": "Send a desktop notification when a check flips up to down, or back."
+      }
+    ]
+  }
+}
