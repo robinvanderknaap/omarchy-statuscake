@@ -11,6 +11,22 @@ you can install selectively.
 `omarchy plugin update` refreshes the plugin on disk but does not rebuild a bar
 widget that is already mounted.
 
+## 0.1.1 — 2026-08-24
+
+A hardening fix to how the widget reads a reply from the StatusCake API.
+Nothing you have set changes, and against a healthy account nothing behaves
+differently.
+
+**Run `omarchy restart shell` after updating.**
+
+Until now the widget read whatever came back from the API in full, bounded only
+by a 15-second timeout — a large enough response would have been held in memory
+twice over, on the thread that draws your bar. A fetch is now capped at 4 MB per
+page and 8 MB for your whole set of checks, and anything past that is refused
+with an error in the panel rather than read. A real account is orders of
+magnitude below both limits; they matter only if something other than StatusCake
+is answering at that address.
+
 ## 0.1.0 — 2026-08-24
 
 First release.
