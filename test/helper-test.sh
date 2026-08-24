@@ -118,6 +118,22 @@ check_eq "garbage is coded as parse" "parse" "$(jq -r '.code' <<<"$OUT")"
 run_mode 500
 check_eq "an API fault is not coded as a token problem" "http" "$(jq -r '.code' <<<"$OUT")"
 
+# --- oversized responses ---------------------------------------------------
+# The response is read whole into a shell variable and then handed to QML, so
+# without a cap the ceiling on both is whatever the far end chooses to send.
+# Both shapes matter: a declared Content-Length curl refuses before reading the
+# body, and an undeclared one it has to abandon mid-transfer.
+
+for mode in huge huge-nolength; do
+  run_mode "$mode"
+  check_eq "$mode exits 1" "1" "$RC"
+  check_eq "$mode is coded as too_large" "too_large" "$(jq -r '.code' <<<"$OUT")"
+  check_eq "$mode returns an empty data array" "0" "$(jq '.data | length' <<<"$OUT")"
+  # The point of the cap: what reaches QML stays small whatever the API sends.
+  small=false; (( ${#OUT} < 4096 )) && small=true
+  check_eq "$mode keeps the helper's own output small" "true" "$small"
+done
+
 # --- argument and token errors (no server needed) --------------------------
 
 OUT=$(STATUSCAKE_API_TOKEN=x "$UNDER_TEST" --bogus 2>/dev/null); RC=$?

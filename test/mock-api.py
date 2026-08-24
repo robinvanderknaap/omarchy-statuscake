@@ -3,7 +3,7 @@
 Serves /v1/uptime on 127.0.0.1:8933 and records every request it receives so the
 test can assert on pagination, query parameters, and the Authorization header.
 
-Usage: python3 mock-api.py [ok|401|403|429|500|garbage]
+Usage: python3 mock-api.py [ok|401|403|429|500|garbage|huge|huge-nolength]
 Prints "ready" once listening; writes seen.json and exits when stdin closes.
 """
 
@@ -18,6 +18,12 @@ PORT = 8933
 PAGES = 3
 PER_PAGE = 100
 LAST_PAGE_COUNT = 7
+
+# Comfortably past the helper's 4 MB per-page cap. "huge" declares the length
+# up front, which is the case curl refuses before reading a byte of body;
+# "huge-nolength" streams it chunked, so the cap has to hold while the transfer
+# is already running.
+HUGE_BYTES = 6 * 1024 * 1024
 
 seen = []
 
@@ -44,6 +50,10 @@ class Handler(BaseHTTPRequestHandler):
             self.send_response(200)
             self.end_headers()
             self.wfile.write(b"<html>not json at all</html>")
+            return
+
+        if MODE in ("huge", "huge-nolength"):
+            self.serve_huge(declare_length=MODE == "huge")
             return
 
         page = int(parsed.query and parse_qs(parsed.query).get("page", ["1"])[0] or 1)
@@ -81,6 +91,28 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def serve_huge(self, declare_length):
+        """Valid JSON, one enormous string field, sent a megabyte at a time."""
+        head = b'{"data":[],"metadata":{"page_count":1},"pad":"'
+        tail = b'"}'
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        if declare_length:
+            self.send_header("Content-Length", str(len(head) + HUGE_BYTES + len(tail)))
+        self.end_headers()
+        # The client is expected to hang up partway through, which arrives here
+        # as a broken pipe rather than as a test failure.
+        try:
+            self.wfile.write(head)
+            chunk = b"x" * (1024 * 1024)
+            sent = 0
+            while sent < HUGE_BYTES:
+                self.wfile.write(chunk[:min(len(chunk), HUGE_BYTES - sent)])
+                sent += len(chunk)
+            self.wfile.write(tail)
+        except (BrokenPipeError, ConnectionResetError):
+            pass
 
 
 server = HTTPServer(("127.0.0.1", PORT), Handler)

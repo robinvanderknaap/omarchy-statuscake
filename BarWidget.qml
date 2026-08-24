@@ -182,8 +182,15 @@ Item {
       waitForEnd: true
       onStreamFinished: {
         root.refreshing = false
-        var raw = String(text || "").trim()
-        if (!raw) {
+        var out = String(text || "")
+        var oversize = Model.payloadTooLarge(out)
+        var raw = oversize ? "" : out.trim()
+        if (oversize) {
+          // The helper caps its own output far below this, so anything this
+          // large is not it answering. Refused rather than parsed: JSON.parse
+          // would double it, on the thread that draws the bar.
+          root.summary = Model.summarize({ error: "statuscake-uptime returned far more data than it should", data: [] })
+        } else if (!raw) {
           // The helper always prints JSON, so silence means it could not run
           // at all -- a missing file or a lost exec bit.
           root.summary = Model.summarize({ error: "could not run statuscake-uptime", data: [] })

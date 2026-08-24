@@ -35,6 +35,31 @@ function payload(checks) {
   return { error: null, data: checks }
 }
 
+// --- payloadTooLarge -------------------------------------------------------
+// The widget's last guard before JSON.parse: bin/statuscake-uptime caps what it
+// prints, and this refuses anything past that ceiling from a helper that no
+// longer does -- replaced, broken, or shadowed on PATH.
+
+test("payloadTooLarge passes an ordinary payload through", () => {
+  assert.strictEqual(M.payloadTooLarge(JSON.stringify(payload([check(), check()]))), false)
+  assert.strictEqual(M.payloadTooLarge(""), false)
+  assert.strictEqual(M.payloadTooLarge(null), false)
+  assert.strictEqual(M.payloadTooLarge(undefined), false)
+})
+
+test("payloadTooLarge rejects output past the ceiling", () => {
+  assert.strictEqual(M.payloadTooLarge("x".repeat(M.MAX_PAYLOAD_CHARS)), false)
+  assert.strictEqual(M.payloadTooLarge("x".repeat(M.MAX_PAYLOAD_CHARS + 1)), true)
+})
+
+// A real account is orders of magnitude under the ceiling: 5000 checks is what
+// the helper's own page cap allows through, and it must not trip this.
+test("payloadTooLarge leaves room for the largest account the helper allows", () => {
+  const many = []
+  for (let i = 0; i < 5000; i++) many.push(check({ id: String(i), name: "check number " + i }))
+  assert.strictEqual(M.payloadTooLarge(JSON.stringify(payload(many))), false)
+})
+
 // --- summarize -------------------------------------------------------------
 
 test("summarize counts up, down and paused separately", () => {

@@ -181,8 +181,20 @@ the exit code is redundant:
 ```
 
 `error` is prose for a human; `code` is a stable slug — `missing_dep`, `usage`,
-`no_token`, `unauthorized`, `rate_limited`, `network`, `http`, `parse`. Branch
-on `code`, never the prose (`Model.needsToken()`, `Model.tokenRejected()`).
+`no_token`, `unauthorized`, `rate_limited`, `network`, `http`, `parse`,
+`too_large`. Branch on `code`, never the prose (`Model.needsToken()`,
+`Model.tokenRejected()`).
+
+**Nothing unbounded reaches QML.** A response is read whole into a shell
+variable and `StdioCollector` buffers the whole stream before QML sees a byte,
+and neither has a limit of its own, so the size of both is whatever the far end
+decides to send unless something caps it. Three things do: `--max-filesize`
+(curl aborts the transfer at 4 MB, mid-stream and with no declared
+`Content-Length` — verified on curl 8.21), a length check behind it for a curl
+that would not, and `MAX_DOC_BYTES` on the merged document, since 50 pages that
+each pass the per-page cap still add up. `Model.payloadTooLarge()` is the last
+line, in front of `JSON.parse`, which would double the string on the thread that
+draws the bar. `test/mock-api.py huge` and `huge-nolength` cover both shapes.
 `statuscake-setup --json` follows the same one-object rule with its own codes.
 
 `bin/statuscake-tags` is the deliberate exception: a bare JSON array on success,

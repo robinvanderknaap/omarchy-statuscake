@@ -9,7 +9,7 @@
 # `error` is prose for a human; `code` is the same failure as a stable slug, so
 # the QML side can branch (offer the token prompt on "no_token") without
 # pattern-matching English. Codes: missing_dep, usage, no_token, unauthorized,
-# rate_limited, network, http, parse.
+# rate_limited, network, http, parse, too_large.
 #
 # Exit status is 0 on success and 1 on failure, but the JSON is printed either
 # way so the QML side parses one shape and never has to inspect exit codes.
@@ -28,6 +28,17 @@ TOKEN_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/statuscake-token"
 # looping forever inside the shell process.
 PAGE_LIMIT=100
 MAX_PAGES=50
+
+# Size caps. A page of 100 checks is on the order of 40 KB, so 4 MB is two
+# orders of magnitude of headroom and anything past it is not this API
+# answering normally -- a hijacked or misconfigured endpoint, or a proxy
+# serving something else entirely. Without a cap that response is read whole
+# into a shell variable, merged by jq, and handed to QML, so the ceiling is
+# whatever the far end decides to send. MAX_DOC_BYTES bounds the merged
+# document as well, which is what this prints: 50 pages that each pass the
+# per-page cap must still add up to something the panel can hold.
+MAX_PAGE_BYTES=$(( 4 * 1024 * 1024 ))
+MAX_DOC_BYTES=$(( 8 * 1024 * 1024 ))
 
 TAGS=""
 MATCH_ANY=0
@@ -116,6 +127,7 @@ fetch_page() {
   local page="$1"
   local args=(
     --get --silent --show-error --max-time 15
+    --max-filesize "$MAX_PAGE_BYTES"
     --data-urlencode "limit=$PAGE_LIMIT"
     --data-urlencode "page=$page"
   )
@@ -130,7 +142,17 @@ all="[]"
 page=1
 
 while (( page <= MAX_PAGES )); do
-  resp=$(fetch_page "$page") || emit_error "could not reach the StatusCake API" network
+  resp=$(fetch_page "$page")
+  rc=$?
+
+  # curl exits 63 when --max-filesize trips, and aborts the transfer with it.
+  # The length test behind it is the belt to that pair of braces: curl can only
+  # enforce the cap while curl is the one counting, and older curl gave up on
+  # a response whose size the server never declared.
+  if (( rc == 63 )) || (( ${#resp} > MAX_PAGE_BYTES )); then
+    emit_error "StatusCake sent more data than this will read (page $page, over $(( MAX_PAGE_BYTES / 1024 / 1024 )) MB)" too_large
+  fi
+  (( rc == 0 )) || emit_error "could not reach the StatusCake API" network
 
   # -w appended the status code on its own trailing line.
   code="${resp##*$'\n'}"
@@ -148,6 +170,9 @@ while (( page <= MAX_PAGES )); do
 
   all=$(jq -c --argjson acc "$all" '$acc + (.data // [])' <<<"$body") ||
     emit_error "could not merge page $page" parse
+
+  (( ${#all} > MAX_DOC_BYTES )) &&
+    emit_error "StatusCake returned more checks than this can show (over $(( MAX_DOC_BYTES / 1024 / 1024 )) MB)" too_large
 
   page_count=$(jq -r '.metadata.page_count // 1' <<<"$body")
   [[ $page_count =~ ^[0-9]+$ ]] || page_count=1

@@ -75,6 +75,20 @@ function sortChecks(checks) {
   })
 }
 
+// The ceiling on one helper run's output, in characters, checked before any of
+// it is parsed. bin/statuscake-uptime caps what it prints (MAX_DOC_BYTES there)
+// and is the only thing that can stop an oversized response being read at all:
+// StdioCollector buffers the whole stream before QML sees a byte of it, and has
+// no limit of its own. This is the second line -- a helper that has been
+// replaced, broken, or shadowed on PATH is refused here rather than handed to
+// JSON.parse, which would double it and block the shell's UI thread doing so.
+// Well above what the helper will ever emit, so it fires on nothing legitimate.
+var MAX_PAYLOAD_CHARS = 12 * 1024 * 1024
+
+function payloadTooLarge(text) {
+  return String(text === undefined || text === null ? "" : text).length > MAX_PAYLOAD_CHARS
+}
+
 // Turns the helper's {error, code, data} envelope into everything the UI needs.
 // An error yields zeroed counts and an empty list rather than a partial state,
 // so a failed refresh can never be mistaken for "all clear".
@@ -471,6 +485,8 @@ if (typeof module !== "undefined") {
     normalizeCheck: normalizeCheck,
     sortChecks: sortChecks,
     emptySummary: emptySummary,
+    MAX_PAYLOAD_CHARS: MAX_PAYLOAD_CHARS,
+    payloadTooLarge: payloadTooLarge,
     summarize: summarize,
     needsToken: needsToken,
     tokenRejected: tokenRejected,

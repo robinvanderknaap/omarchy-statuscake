@@ -140,9 +140,14 @@ fi
 
 # Returns the HTTP status code for a token. The token reaches curl on stdin so
 # it stays out of ps and /proc/<pid>/cmdline, exactly as the fetch helper does.
+#
+# Only the status code decides anything here, so the body goes to /dev/null and
+# --max-filesize hangs up on an endpoint that answers 200 with a megabyte --
+# curl reports the code it already has and nothing is read that nothing wants.
 token_http_code() {
   printf 'Authorization: Bearer %s' "$1" |
     curl --get --silent --show-error --max-time 15 \
+      --max-filesize $(( 1024 * 1024 )) \
       --data-urlencode "limit=1" \
       -H @- -o /dev/null -w '%{http_code}' "$API" 2>/dev/null
 }
