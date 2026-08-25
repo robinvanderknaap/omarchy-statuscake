@@ -9,16 +9,14 @@
 #
 # The token is never passed as a command-line argument, never echoed to the
 # terminal, and never written to shell.json. It goes into the session keyring
-# via secret-tool, or -- if no keyring is available -- into a 0600 file.
+# via secret-tool.
 
 set -uo pipefail
 
 API="https://api.statuscake.com/v1/uptime"
-TOKEN_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/statuscake-token"
 KEYRING_ATTRS=(service statuscake account api)
 KEYRING_LABEL="StatusCake API"
 
-USE_FILE=0
 FROM_STDIN=0
 JSON=0
 NO_VERIFY=0
@@ -38,19 +36,17 @@ fail() {
 
 usage() {
   cat <<'USAGE'
-Usage: statuscake-setup [--file] [--stdin] [--json]
+Usage: statuscake-setup [--stdin] [--json]
        statuscake-setup --status [--no-verify] [--json]
        statuscake-setup --remove [--json]
 
   (no options)  Prompt for an API token, verify it, and store it.
   --stdin       Read the token from stdin instead of prompting. For callers
                 that are not a terminal, such as the bar panel.
-  --file        Store in ~/.config/omarchy/statuscake-token (0600) instead of
-                the keyring. Use this on systems without a running keyring.
   --status      Report where a token was found and whether it still works.
   --no-verify   With --status, report where the token lives without calling
                 the API. Costs nothing and touches no network.
-  --remove      Delete the stored token from the keyring and the file.
+  --remove      Delete the stored token from the keyring.
   --json        Emit one JSON object instead of prose. Every run prints exactly
                 one object, success or failure, so a caller parses one shape:
                   store   {"ok":true,  "error":null, "code":null, "stored":"keyring", "path":null}
@@ -109,7 +105,6 @@ trim() {
 
 while (( $# > 0 )); do
   case "$1" in
-  --file) USE_FILE=1; shift ;;
   --stdin) FROM_STDIN=1; shift ;;
   --json) JSON=1; shift ;;
   --no-verify) NO_VERIFY=1; shift ;;
@@ -185,8 +180,9 @@ verify_token() {
 }
 
 # Where a token would be read from, in the same order bin/statuscake-uptime
-# reads it. Sets FOUND_TOKEN, FOUND_SOURCE (env|keyring|file, empty if none)
-# and FOUND_PATH.
+# reads it. Sets FOUND_TOKEN and FOUND_SOURCE (env|keyring, empty if none).
+# FOUND_PATH is always empty now that no source is a path, but it stays in the
+# JSON shape so the panel keeps parsing one object with fixed fields.
 FOUND_TOKEN=""
 FOUND_SOURCE=""
 FOUND_PATH=""
@@ -202,10 +198,6 @@ locate_token() {
   elif have_keyring && FOUND_TOKEN=$(secret-tool lookup "${KEYRING_ATTRS[@]}" 2>/dev/null) && [[ -n $FOUND_TOKEN ]]; then
     FOUND_TOKEN=$(trim "$FOUND_TOKEN")
     FOUND_SOURCE="keyring"
-  elif [[ -r $TOKEN_FILE ]]; then
-    FOUND_TOKEN=$(trim "$(<"$TOKEN_FILE")")
-    FOUND_SOURCE="file"
-    FOUND_PATH="$TOKEN_FILE"
   fi
 
   [[ -n $FOUND_TOKEN ]] || { FOUND_SOURCE=""; FOUND_PATH=""; return 1; }
@@ -224,7 +216,6 @@ if [[ $ACTION == status ]]; then
   case "$FOUND_SOURCE" in
   env) say "Token found in: \$STATUSCAKE_API_TOKEN" ;;
   keyring) say "Token found in: keyring" ;;
-  file) say "Token found in: $FOUND_PATH" ;;
   esac
 
   if (( NO_VERIFY )); then
@@ -248,9 +239,6 @@ if [[ $ACTION == remove ]]; then
   if have_keyring && secret-tool clear "${KEYRING_ATTRS[@]}" 2>/dev/null; then
     say "Cleared the keyring entry."
     removed=1
-  fi
-  if [[ -e $TOKEN_FILE ]]; then
-    rm -f -- "$TOKEN_FILE" && say "Deleted $TOKEN_FILE" && removed=1
   fi
   (( removed )) || say "Nothing stored to remove."
   emit_json_store_ok "removed"
@@ -297,37 +285,25 @@ say "Token verified."
 
 # Nothing is written until the token has proven itself above, so a typo never
 # replaces a working token with a broken one.
-if (( ! USE_FILE )) && have_keyring; then
-  if printf '%s' "$token" |
-    secret-tool store --label="$KEYRING_LABEL" "${KEYRING_ATTRS[@]}" 2>/dev/null; then
-    emit_json_store_ok "keyring"
-    say "Stored in the keyring."
-    say ""
-    say "Add the widget to your bar with:"
-    say "  omarchy plugin enable robinvanderknaap.statuscake"
-    exit 0
-  fi
-  warn "Could not write to the keyring (is one running and unlocked?)."
-  warn "Falling back to a file."
+#
+# The keyring is the only destination. A failure here is reported as one --
+# there is no second-best place to put a verified credential, and writing it to
+# a file instead would trade a locked keyring for a plaintext one without
+# asking. Both messages name the likely cause, because "could not store" on its
+# own tells the user nothing they can act on.
+if ! have_keyring; then
+  emit_json_failure "secret-tool is not installed, so there is nowhere to store the token." missing_dep
+  fail "secret-tool is not installed (it comes with libsecret)"
 fi
 
-if ! mkdir -p -- "$(dirname -- "$TOKEN_FILE")"; then
-  emit_json_failure "Could not create $(dirname -- "$TOKEN_FILE")." store_failed
-  fail "could not create $(dirname -- "$TOKEN_FILE")"
+if ! printf '%s' "$token" |
+  secret-tool store --label="$KEYRING_LABEL" "${KEYRING_ATTRS[@]}" 2>/dev/null; then
+  emit_json_failure "Could not write to your keyring. It may be locked -- unlock it and try again." store_failed
+  fail "could not write to the keyring (is it running and unlocked?)"
 fi
 
-if ! (
-  umask 077
-  printf '%s\n' "$token" > "$TOKEN_FILE"
-); then
-  emit_json_failure "Could not write $TOKEN_FILE." store_failed
-  fail "could not write $TOKEN_FILE"
-fi
-chmod 600 -- "$TOKEN_FILE" 2>/dev/null
-
-emit_json_store_ok "file" "$TOKEN_FILE"
-
-say "Stored in $TOKEN_FILE (readable only by you)."
+emit_json_store_ok "keyring"
+say "Stored in the keyring."
 say ""
 say "Add the widget to your bar with:"
 say "  omarchy plugin enable robinvanderknaap.statuscake"

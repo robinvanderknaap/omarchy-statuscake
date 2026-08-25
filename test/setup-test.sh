@@ -77,8 +77,6 @@ reset_state() {
   mkdir -p "$WORK/home"
 }
 
-TOKEN_PATH="$WORK/home/.config/omarchy/statuscake-token"
-
 # Runs the script under test with the mock API in $1, everything after -- as
 # arguments, and $STDIN_TOKEN piped in. Sets $OUT and $RC.
 run_setup() {
@@ -98,7 +96,7 @@ run_setup() {
     env -u STATUSCAKE_API_TOKEN ${ENV_TOKEN:+STATUSCAKE_API_TOKEN="$ENV_TOKEN"} \
       HOME="$WORK/home" XDG_CONFIG_HOME="$WORK/home/.config" \
       KEYRING_FILE="$WORK/keyring" PATH="$stub_path:$PATH" \
-      "$UNDER_TEST" "$@")
+      "$UNDER_TEST" "$@" 2>"$WORK/err")
   RC=$?
 
   echo "" >&"${MOCK[1]}" 2>/dev/null
@@ -119,17 +117,21 @@ check_eq "stores the token verbatim" "GOODTOKEN" "$(cat "$WORK/keyring" 2>/dev/n
 check_eq "emits exactly one JSON object" "1" "$(jq -s 'length' <<<"$OUT")"
 check_eq "says nothing on stdout but the JSON" "true" "$(jq -e 'has("ok")' <<<"$OUT")"
 
+# The keyring is the only destination. A locked one is reported, not worked
+# around: writing the token to a plaintext file instead would be a silent
+# downgrade at the one moment the user is least likely to notice.
 reset_state
 STDIN_TOKEN="GOODTOKEN" PATH_PREFIX="$WORK/lockedkeyring" run_setup ok --stdin --json
-check_eq "falls back to a file when the keyring refuses" "file" "$(jq -r '.stored' <<<"$OUT")"
-check_eq "names the file it wrote" "$TOKEN_PATH" "$(jq -r '.path' <<<"$OUT")"
-check_eq "file holds the token" "GOODTOKEN" "$(cat "$TOKEN_PATH" 2>/dev/null)"
-check_eq "file is readable only by its owner" "600" "$(stat -c '%a' "$TOKEN_PATH" 2>/dev/null)"
+check_eq "a refusing keyring exits 1" "1" "$RC"
+check_eq "a refusing keyring reports failure" "false" "$(jq -r '.ok' <<<"$OUT")"
+check_eq "a refusing keyring is coded as store_failed" "store_failed" "$(jq -r '.code' <<<"$OUT")"
+check_contains "the locked keyring is named as the likely cause" "locked" "$(jq -r '.error' <<<"$OUT")"
+check_eq "a refusing keyring stores the token nowhere" "" \
+  "$(find "$WORK/home" -type f 2>/dev/null)"
 
 reset_state
 STDIN_TOKEN="GOODTOKEN" run_setup ok --stdin --json --file
-check_eq "--file bypasses the keyring" "file" "$(jq -r '.stored' <<<"$OUT")"
-check_eq "--file leaves the keyring untouched" "" "$(cat "$WORK/keyring" 2>/dev/null)"
+check_eq "--file is gone, not silently accepted" "usage" "$(jq -r '.code' <<<"$OUT")"
 
 reset_state
 STDIN_TOKEN=$'GOODTOKEN\n' run_setup ok --stdin --json
@@ -189,13 +191,6 @@ check_eq "--no-verify does not claim the token works" "null" "$(jq -r '.valid' <
 check_eq "--no-verify calls no API at all" "0" "$(jq 'length' "$WORK/seen.json" 2>/dev/null || echo 0)"
 
 reset_state
-mkdir -p "$(dirname "$TOKEN_PATH")"
-printf 'GOODTOKEN\n' > "$TOKEN_PATH"
-run_setup ok --status --json --no-verify
-check_eq "finds a file token" "file" "$(jq -r '.source' <<<"$OUT")"
-check_eq "reports where the file is" "$TOKEN_PATH" "$(jq -r '.path' <<<"$OUT")"
-
-reset_state
 printf 'GOODTOKEN' > "$WORK/keyring"
 ENV_TOKEN="ENVTOKEN" run_setup ok --status --json --no-verify
 check_eq "\$STATUSCAKE_API_TOKEN outranks the keyring" "env" "$(jq -r '.source' <<<"$OUT")"
@@ -216,12 +211,9 @@ check_eq "a stale token exits 1" "1" "$RC"
 
 reset_state
 printf 'GOODTOKEN' > "$WORK/keyring"
-mkdir -p "$(dirname "$TOKEN_PATH")"
-printf 'GOODTOKEN\n' > "$TOKEN_PATH"
 run_setup ok --remove --json
 check_eq "--remove exits 0" "0" "$RC"
 check_eq "--remove clears the keyring" "1" "$([[ -e $WORK/keyring ]] && echo 0 || echo 1)"
-check_eq "--remove deletes the file" "1" "$([[ -e $TOKEN_PATH ]] && echo 0 || echo 1)"
 
 # --- bad invocations -------------------------------------------------------
 

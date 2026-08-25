@@ -21,7 +21,6 @@
 set -uo pipefail
 
 API="https://api.statuscake.com/v1/uptime"
-TOKEN_FILE="${XDG_CONFIG_HOME:-$HOME/.config}/omarchy/statuscake-token"
 
 # The API caps `limit` at 100. MAX_PAGES is a runaway guard: 50 pages is 5000
 # checks, well past any real account, and stops a malformed page_count from
@@ -50,10 +49,8 @@ Usage: statuscake-uptime [--tags LIST] [--match-any]
   --tags LIST    Comma-separated tags; only checks carrying them are returned.
   --match-any    Match checks carrying ANY of --tags instead of all of them.
 
-Reads the API token from, in order:
-  $STATUSCAKE_API_TOKEN
+Reads the API token from $STATUSCAKE_API_TOKEN, or failing that from
   secret-tool lookup service statuscake account api
-  ~/.config/omarchy/statuscake-token
 USAGE
 }
 
@@ -113,10 +110,6 @@ token=$(trim "${STATUSCAKE_API_TOKEN:-}")
 
 if [[ -z $token ]] && command -v secret-tool >/dev/null 2>&1; then
   token=$(trim "$(secret-tool lookup service statuscake account api 2>/dev/null)")
-fi
-
-if [[ -z $token && -r $TOKEN_FILE ]]; then
-  token=$(trim "$(<"$TOKEN_FILE")")
 fi
 
 if [[ -z $token ]]; then

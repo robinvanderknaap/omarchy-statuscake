@@ -7,7 +7,7 @@ Target: **Omarchy 4.0.0**, Quickshell 0.3.0, Hyprland.
 
 ## Ground rules
 
-**Never let a test reach the real keyring, token file, or account.** Anything
+**Never let a test reach the real keyring or account.** Anything
 that might call `secret-tool` runs with a stub ahead of the real binary on
 `PATH` — `command -v secret-tool` finds the system one through an empty
 directory, and `secret-tool store` then overwrites the developer's own token
@@ -62,7 +62,7 @@ change works.
 | `BarWidget.qml` | the pill; owns `settings`, the fetch `Process`, the refresh `Timer` |
 | `Panel.qml` | the only window: check list, and settings behind the cog — a `KeyboardPanel` under the pill |
 | `bin/statuscake-uptime` | auth, pagination, tag filter → one JSON document |
-| `bin/statuscake-setup` | verify and store a token; interactive or `--stdin --json` |
+| `bin/statuscake-setup` | verify and store a token in the keyring; interactive or `--stdin --json` |
 | `bin/statuscake-tags` | every distinct tag on the account, as a JSON array, for the picker |
 | `assets/statuscake.svg` | StatusCake's mark, in the panel header — their trademark, see README |
 | `CHANGELOG.md` | user-facing; written at release time by the `publish` skill |
@@ -156,7 +156,7 @@ also means a rejected token cannot be deleted from the panel — pasting over it
 is the fix, and the README carries `secret-tool clear` for the rest.
 
 `Model.tokenRemovable()` gates the removal control on a token this can
-actually delete: a keyring entry or the file, never `$STATUSCAKE_API_TOKEN`,
+actually delete: the keyring entry, never `$STATUSCAKE_API_TOKEN`,
 where `--remove` would clear something nothing is reading and leave the
 environment still winning. A working environment token therefore leaves the
 section as its status line alone, which is the honest shape: nothing to paste
@@ -196,6 +196,15 @@ each pass the per-page cap still add up. `Model.payloadTooLarge()` is the last
 line, in front of `JSON.parse`, which would double the string on the thread that
 draws the bar. `test/mock-api.py huge` and `huge-nolength` cover both shapes.
 `statuscake-setup --json` follows the same one-object rule with its own codes.
+
+**The keyring is the only place a token is stored, and that is a platform
+fact, not a preference.** `omarchy` hard-depends on `gnome-keyring`, which
+depends on `gcr`/`gcr-4`, which hard-depend on `libsecret` — the package that
+provides `secret-tool`. `pactree -u omarchy` puts `libsecret` in the closure,
+so `have_keyring()` cannot legitimately be false on an Omarchy box. `sddm` is a
+hard dependency too, and `/etc/pam.d/sddm` and `/etc/pam.d/sddm-autologin` both
+carry `pam_gnome_keyring.so auto_start`, so the keyring is unlocked at login and
+at autologin — and a bar widget only ever runs inside that session.
 
 `bin/statuscake-tags` is the deliberate exception: a bare JSON array on success,
 nothing on failure with the reason on stderr and a non-zero exit. That is the

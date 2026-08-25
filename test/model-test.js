@@ -425,10 +425,10 @@ test("parseSetupResult reads a rejection and keeps its reason", () => {
 })
 
 test("parseSetupResult reads a status report", () => {
-  const r = M.parseSetupResult('{"ok":true,"source":"file","path":"/home/x/.config/omarchy/statuscake-token","valid":null}')
-  assert.strictEqual(r.source, "file")
+  const r = M.parseSetupResult('{"ok":true,"source":"keyring","path":null,"valid":null}')
+  assert.strictEqual(r.source, "keyring")
   assert.strictEqual(r.valid, null)
-  assert.strictEqual(r.path, "/home/x/.config/omarchy/statuscake-token")
+  assert.strictEqual(r.path, "")
 })
 
 test("parseSetupResult distinguishes an unverified token from a bad one", () => {
@@ -458,7 +458,6 @@ test("tokenState says a token works, and where it is", () => {
   assert.strictEqual(state.icon, M.ICON_OK)
   assert.ok(state.text.includes("works"), state.text)
   assert.ok(state.text.includes("keyring"), state.text)
-  assert.ok(M.tokenState(LIVE, M.parseSetupResult('{"ok":true,"source":"file","path":"/tmp/t"}')).text.includes("/tmp/t"))
 })
 
 // The probe runs --no-verify, so it can only say a token exists. What proves it
@@ -507,7 +506,6 @@ test("the ordinary save hint promises verification", () => {
 // a terminal, and it has to offer that route exactly when there is one to take.
 test("removal is offered for a token this can actually delete", () => {
   assert.strictEqual(M.tokenRemovable(M.parseSetupResult('{"ok":true,"source":"keyring"}')), true)
-  assert.strictEqual(M.tokenRemovable(M.parseSetupResult('{"ok":true,"source":"file","path":"/tmp/t"}')), true)
 })
 
 // An environment token is not this plugin's to delete: --remove would clear a
@@ -521,18 +519,17 @@ test("removal is not offered for an environment token, or for none at all", () =
 })
 
 test("the confirm step names what it would delete", () => {
-  const file = M.parseSetupResult('{"ok":true,"source":"file","path":"/home/x/.config/omarchy/statuscake-token"}')
-  assert.ok(M.tokenRemoveConfirm(file).includes("/home/x/.config/omarchy/statuscake-token"))
   assert.ok(/keyring/.test(M.tokenRemoveConfirm(M.parseSetupResult('{"ok":true,"source":"keyring"}'))))
   // Nothing to delete, nothing to ask about.
   assert.strictEqual(M.tokenRemoveConfirm(M.parseSetupResult('{"ok":true,"source":"env"}')), "")
 })
 
-// A file token whose path came back empty still gets a sentence rather than a
-// question with a hole in it.
-test("the confirm step survives a status with no path", () => {
-  const confirm = M.tokenRemoveConfirm(M.parseSetupResult('{"ok":true,"source":"file"}'))
-  assert.ok(confirm.length > 0 && !confirm.includes("undefined"), confirm)
+// The keyring is the only removable source now. An unknown one -- a newer
+// helper, a hand-edited probe -- must not produce a question with a hole in it.
+test("an unrecognised source offers no removal rather than a broken prompt", () => {
+  const odd = M.parseSetupResult('{"ok":true,"source":"file","path":"/tmp/t"}')
+  assert.strictEqual(M.tokenRemovable(odd), false)
+  assert.strictEqual(M.tokenRemoveConfirm(odd), "")
 })
 
 // --- settings write-back ---------------------------------------------------

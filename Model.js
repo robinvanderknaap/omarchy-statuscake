@@ -330,14 +330,13 @@ function parseSetupResult(raw) {
 }
 
 // Where the token actually lives, as a phrase that finishes a sentence. The
-// wording differs by source on purpose: a keyring and a file hold a token, the
+// wording differs by source on purpose: the keyring holds a token, the
 // environment merely sets one, and the difference matters because the fetch
 // helper reads the environment first.
 function tokenLocation(status) {
   if (!status || !status.ok) return ""
   if (status.source === "env") return "set by $STATUSCAKE_API_TOKEN"
   if (status.source === "keyring") return "stored in your keyring"
-  if (status.source === "file") return "stored in " + (status.path || "a file")
   return ""
 }
 
@@ -376,15 +375,13 @@ function tokenState(summary, status) {
 // winning, which is the one outcome that looks like the button did nothing.
 function tokenRemovable(status) {
   if (!status || !status.ok) return false
-  return status.source === "keyring" || status.source === "file"
+  return status.source === "keyring"
 }
 
 // What removing would actually delete, named so the confirm step says it
 // rather than asking "are you sure?" about an unstated thing.
 function tokenRemoveConfirm(status) {
   if (!tokenRemovable(status)) return ""
-  if (status.source === "file")
-    return "Delete " + (status.path || "the token file") + "?"
   return "Delete the token from your keyring?"
 }
 

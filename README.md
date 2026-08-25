@@ -76,7 +76,6 @@ The token is read at refresh time from, in order:
 
 1. `$STATUSCAKE_API_TOKEN`
 2. your keyring (`secret-tool lookup service statuscake account api`)
-3. `~/.config/omarchy/statuscake-token`, if it exists (mode 0600)
 
 That order is worth knowing if you set the environment variable: it wins over
 what the panel saves in the keyring.
@@ -104,7 +103,6 @@ If the plugin is already gone, the entry is a plain keyring item and
 
 ```bash
 secret-tool clear service statuscake account api
-rm -f ~/.config/omarchy/statuscake-token
 ```
 
 Revoking the token at
