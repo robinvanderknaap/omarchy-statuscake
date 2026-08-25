@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "robinvanderknaap.statuscake",
   "name": "StatusCake",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "author": "Robin van der Knaap",
   "description": "StatusCake uptime check counts in the bar, with a popup listing every check",
   "kinds": [

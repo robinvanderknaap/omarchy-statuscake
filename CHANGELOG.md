@@ -11,6 +11,37 @@ you can install selectively.
 `omarchy plugin update` refreshes the plugin on disk but does not rebuild a bar
 widget that is already mounted.
 
+## 0.2.0 — 2026-08-25
+
+Your API token now lives in your keyring and nowhere else.
+
+**Run `omarchy restart shell` after updating.**
+
+If your token is in your keyring — where the settings panel has always put it —
+nothing here changes for you.
+
+Until now, if writing to the keyring failed, the setup helper fell back to a
+0600 file at `~/.config/omarchy/statuscake-token`, and the widget read it. Both
+are gone. That fallback was written for a machine with no keyring, which an
+Omarchy install cannot be: Omarchy depends on gnome-keyring, and on sddm, whose
+login unlocks it. What the fallback actually caught was a keyring that happened
+to be locked — and quietly writing your verified token to a plaintext file is
+the wrong answer to that, at the moment you are least likely to notice.
+
+A keyring that refuses the token now says so and asks you to unlock it, instead
+of working around you. `$STATUSCAKE_API_TOKEN` still works if you are running
+somewhere without a session.
+
+### Breaking
+
+- `~/.config/omarchy/statuscake-token` is no longer read. If that is the only
+  place your token lives, the widget will report that it has no token: open the
+  settings panel and paste it again and it will go to your keyring. The old
+  file is not deleted for you — `rm -f ~/.config/omarchy/statuscake-token`.
+- `statuscake-setup --file` is gone and now exits with a usage error.
+
+Nothing you have set in `shell.json` changes; the settings schema is untouched.
+
 ## 0.1.1 — 2026-08-24
 
 A hardening fix to how the widget reads a reply from the StatusCake API.
